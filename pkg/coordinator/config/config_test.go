@@ -174,3 +174,35 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("Load() of missing file: got nil error, want failure")
 	}
 }
+
+func TestLoadAttributionDefaults(t *testing.T) {
+	// From an empty config file, both attribution settings must come from
+	// SetDefault, not from Go's zero values. The critical case is
+	// PrometheusUserIDLabel: Go's zero value for bool is false, so without
+	// SetDefault the documented default of true is unreachable.
+	cfg, err := Load(writeConfig(t, ""))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.RequestAttribution.Enabled != false {
+		t.Errorf("request_attribution.enabled default = %v, want false", cfg.RequestAttribution.Enabled)
+	}
+	if cfg.RequestAttribution.PrometheusUserIDLabel != false {
+		t.Errorf("request_attribution.prometheus_user_id_label default = %v, want false", cfg.RequestAttribution.PrometheusUserIDLabel)
+	}
+}
+
+func TestLoadAttributionEnvOverride(t *testing.T) {
+	// COORDINATOR_REQUEST_ATTRIBUTION_ENABLED=true with the key absent from YAML
+	// must resolve to true. Without the SetDefault("request_attribution.enabled")
+	// call in Load, AutomaticEnv does not bind the key and the env var is ignored
+	// (verified against viper v1.21.0 with this package's SetEnvPrefix setup).
+	t.Setenv("COORDINATOR_REQUEST_ATTRIBUTION_ENABLED", "true")
+	cfg, err := Load(writeConfig(t, ""))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.RequestAttribution.Enabled {
+		t.Errorf("COORDINATOR_REQUEST_ATTRIBUTION_ENABLED=true was not picked up; got false")
+	}
+}

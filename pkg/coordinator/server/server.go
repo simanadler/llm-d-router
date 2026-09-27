@@ -94,10 +94,11 @@ type Server struct {
 	pipeline           *pipeline.Pipeline
 	maxRequestBodySize int64
 	passthrough        *passthroughHandler
+	attributionCfg     config.RequestAttributionConfig
 }
 
-func New(cfg config.ServerConfig, p *pipeline.Pipeline, gwClient *gateway.Client) (*Server, error) {
-	maxBodySize := cfg.MaxRequestBodySize
+func New(cfg *config.Config, p *pipeline.Pipeline, gwClient *gateway.Client) (*Server, error) {
+	maxBodySize := cfg.Server.MaxRequestBodySize
 	if maxBodySize == 0 {
 		// Zero means unset; Viper fills this from the config default in
 		// production. Direct callers (e.g. tests) that leave it unset get
@@ -121,6 +122,7 @@ func New(cfg config.ServerConfig, p *pipeline.Pipeline, gwClient *gateway.Client
 		pipeline:           p,
 		maxRequestBodySize: maxBodySize,
 		passthrough:        passthrough,
+		attributionCfg:     cfg.RequestAttribution,
 	}
 
 	r := chi.NewRouter()
@@ -143,10 +145,10 @@ func New(cfg config.ServerConfig, p *pipeline.Pipeline, gwClient *gateway.Client
 	}
 
 	s.httpServer = &http.Server{
-		Addr:         cfg.ListenAddr,
+		Addr:         cfg.Server.ListenAddr,
 		Handler:      r,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
 	return s, nil

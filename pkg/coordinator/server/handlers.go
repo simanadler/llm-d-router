@@ -44,6 +44,32 @@ import (
 // out of both surfaces.
 var validRequestID = regexp.MustCompile(`^[a-zA-Z0-9\-]{1,128}$`)
 
+// attributionHeader returns the header value for key, or "unknown" when absent
+// or empty. Used to extract x-llm-d-tenant-id, x-llm-d-user-id, and
+// x-llm-d-workload-id from inbound requests.
+func attributionHeader(h http.Header, key string) string {
+	if v := h.Get(key); v != "" {
+		return v
+	}
+	return "unknown"
+}
+
+// injectStreamOptions ensures stream_options.include_usage is set to true in
+// the request body map so vLLM includes a usage object in the final SSE chunk.
+// Idempotent: clients that already send include_usage: true are unaffected.
+// Must be called before the pipeline runs so the injected key is present when
+// DecodeStep marshals the body.
+func injectStreamOptions(body map[string]any) {
+	opts, _ := body["stream_options"].(map[string]any)
+	if opts == nil {
+		opts = map[string]any{}
+		body["stream_options"] = opts
+	}
+	if alreadySet, _ := opts["include_usage"].(bool); !alreadySet {
+		opts["include_usage"] = true
+	}
+}
+
 func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 	receivedAt := time.Now()
 	// model is the raw name from the request body, or "" when the client
@@ -136,6 +162,15 @@ func (s *Server) handleInference(w http.ResponseWriter, r *http.Request) {
 		KVTransferParams: make(map[string]any),
 		ResponseWriter:   w,
 		ParseDuration:    parseDuration,
+	}
+
+	if s.attributionCfg.Enabled {
+		reqCtx.TenantID = attributionHeader(r.Header, "x-llm-d-tenant-id")
+		reqCtx.UserID = attributionHeader(r.Header, "x-llm-d-user-id")
+		reqCtx.WorkloadID = attributionHeader(r.Header, "x-llm-d-workload-id")
+		if stream {
+			injectStreamOptions(reqCtx.Body)
+		}
 	}
 
 	logger := ctrl.Log.WithName("handler").WithValues(reqcommon.RequestIDHeaderKey, reqCtx.RequestID)

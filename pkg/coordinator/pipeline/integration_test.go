@@ -25,13 +25,16 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/config"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/connectors/ec"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/connectors/kv"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/gateway"
+	coordmetrics "github.com/llm-d/llm-d-router/pkg/coordinator/metrics"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/pipeline"
-	"github.com/llm-d/llm-d-router/pkg/coordinator/steps"
+	coordsteps "github.com/llm-d/llm-d-router/pkg/coordinator/steps"
 )
 
 func TestFullPipeline_AllConnectorCombinations(t *testing.T) {
@@ -52,9 +55,9 @@ func TestFullPipeline_AllConnectorCombinations(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"token_ids": []int{1, 32000, 32000, 32000, 2345, 6789},
 					"features": map[string]any{
-						"mm_hashes":       map[string][]string{steps.ModalityImage: {"vllm-hash-img0"}},
-						"mm_placeholders": map[string][]any{steps.ModalityImage: {map[string]any{"offset": 1, "length": 3}}},
-						"kwargs_data":     map[string][]string{steps.ModalityImage: {"dGVuc29yLWRhdGE="}},
+						"mm_hashes":       map[string][]string{coordsteps.ModalityImage: {"vllm-hash-img0"}},
+						"mm_placeholders": map[string][]any{coordsteps.ModalityImage: {map[string]any{"offset": 1, "length": 3}}},
+						"kwargs_data":     map[string][]string{coordsteps.ModalityImage: {"dGVuc29yLWRhdGE="}},
 					},
 				})
 			}))
@@ -73,7 +76,7 @@ func TestFullPipeline_AllConnectorCombinations(t *testing.T) {
 					// Generate format: features at top level
 					features, _ := parsed["features"].(map[string]any)
 					mmHashes, _ := features["mm_hashes"].(map[string]any)
-					imageHashes, _ := mmHashes[steps.ModalityImage].([]any)
+					imageHashes, _ := mmHashes[coordsteps.ModalityImage].([]any)
 					hash, _ := imageHashes[0].(string)
 					_ = json.NewEncoder(w).Encode(map[string]any{
 						"ec_transfer_params": map[string]any{
@@ -111,9 +114,9 @@ func TestFullPipeline_AllConnectorCombinations(t *testing.T) {
 			stepConfigs := []config.StepConfig{
 				{Type: "replace-media-urls", Params: map[string]any{"download_timeout": "5s"}},
 				{Type: "render", Params: map[string]any{"endpoint": reqcommon.PathChatCompletions + "/render"}},
-				{Type: "encode", Params: map[string]any{"use_openai_format": false, steps.ParamECConnector: tc.ecConnector}},
-				{Type: "prefill", Params: map[string]any{"use_openai_format": false, steps.ParamKVConnector: tc.kvConnector, steps.ParamECConnector: tc.ecConnector}},
-				{Type: "decode", Params: map[string]any{"use_openai_format": false, steps.ParamKVConnector: tc.kvConnector}},
+				{Type: "encode", Params: map[string]any{"use_openai_format": false, coordsteps.ParamECConnector: tc.ecConnector}},
+				{Type: "prefill", Params: map[string]any{"use_openai_format": false, coordsteps.ParamKVConnector: tc.kvConnector, coordsteps.ParamECConnector: tc.ecConnector}},
+				{Type: "decode", Params: map[string]any{"use_openai_format": false, coordsteps.ParamKVConnector: tc.kvConnector}},
 			}
 
 			pipelineSteps := make([]pipeline.Step, 0, len(stepConfigs))
@@ -197,9 +200,9 @@ func TestFullPipeline_Integration(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"token_ids": []int{1, 32000, 32000, 32000, 2345, 6789},
 			"features": map[string]any{
-				"mm_hashes":       map[string][]string{steps.ModalityImage: {"vllm-hash-img0"}},
-				"mm_placeholders": map[string][]any{steps.ModalityImage: {map[string]any{"offset": 1, "length": 3}}},
-				"kwargs_data":     map[string][]string{steps.ModalityImage: {"dGVuc29yLWRhdGE="}},
+				"mm_hashes":       map[string][]string{coordsteps.ModalityImage: {"vllm-hash-img0"}},
+				"mm_placeholders": map[string][]any{coordsteps.ModalityImage: {map[string]any{"offset": 1, "length": 3}}},
+				"kwargs_data":     map[string][]string{coordsteps.ModalityImage: {"dGVuc29yLWRhdGE="}},
 			},
 		})
 	}))
@@ -214,7 +217,7 @@ func TestFullPipeline_Integration(t *testing.T) {
 			_ = json.Unmarshal(body, &parsed)
 			features, _ := parsed["features"].(map[string]any)
 			mmHashes, _ := features["mm_hashes"].(map[string]any)
-			imageHashes, _ := mmHashes[steps.ModalityImage].([]any)
+			imageHashes, _ := mmHashes[coordsteps.ModalityImage].([]any)
 			hash, _ := imageHashes[0].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ec_transfer_params": map[string]any{
@@ -249,8 +252,8 @@ func TestFullPipeline_Integration(t *testing.T) {
 	stepConfigs := []config.StepConfig{
 		{Type: "replace-media-urls", Params: map[string]any{"download_timeout": "5s"}},
 		{Type: "render", Params: map[string]any{"endpoint": reqcommon.PathChatCompletions + "/render"}},
-		{Type: "encode", Params: map[string]any{"use_openai_format": false, steps.ParamECConnector: ec.NIXL}},
-		{Type: "prefill", Params: map[string]any{"use_openai_format": false, steps.ParamECConnector: ec.NIXL}},
+		{Type: "encode", Params: map[string]any{"use_openai_format": false, coordsteps.ParamECConnector: ec.NIXL}},
+		{Type: "prefill", Params: map[string]any{"use_openai_format": false, coordsteps.ParamECConnector: ec.NIXL}},
 		{Type: "decode", Params: map[string]any{"use_openai_format": false}},
 	}
 
@@ -317,5 +320,123 @@ func TestFullPipeline_Integration(t *testing.T) {
 	}
 	if len(reqCtx.KVTransferParams) == 0 {
 		t.Fatal("expected KVTransferParams to be populated")
+	}
+}
+
+// TestAttribution_NonStreaming tests end-to-end attribution with a non-streaming
+// decode-only pipeline: hook populates reqCtx fields and emits metrics.
+func TestAttribution_NonStreaming(t *testing.T) {
+	coordmetrics.ResetAttribution()
+	reg := prometheus.NewRegistry()
+	coordmetrics.RegisterAttribution(reg, false)
+	t.Cleanup(coordmetrics.ResetAttribution)
+	coordmetrics.Reset()
+
+	fakeGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "serving-model",
+			"usage": map[string]any{
+				"prompt_tokens":     int(20),
+				"completion_tokens": int(10),
+			},
+			"choices": []map[string]any{
+				{"message": map[string]any{"content": "hi"}},
+			},
+		})
+	}))
+	defer fakeGW.Close()
+
+	hook := coordsteps.NewAttributionHook(true, "test-ns")
+	gwClient := gateway.New(config.GatewayConfig{Address: fakeGW.URL, MaxIdleConnsPerHost: 2})
+	step, err := pipeline.Build(coordsteps.DecodeStepName, gwClient, map[string]any{"use_openai_format": true})
+	if err != nil {
+		t.Fatalf("build decode step: %v", err)
+	}
+	step.(coordsteps.AttributionHookSetter).SetAttributionHook(hook)
+
+	recorder := httptest.NewRecorder()
+	reqCtx := &pipeline.RequestContext{
+		RequestID:        "attribution-nonstreaming",
+		OriginalPath:     reqcommon.PathChatCompletions,
+		Body:             map[string]any{"model": "requested-model", "messages": []any{}},
+		OriginalBody:     []byte(`{"model":"requested-model","messages":[]}`),
+		Model:            "requested-model",
+		Stream:           false,
+		TenantID:         "tenant1",
+		UserID:           "user1",
+		WorkloadID:       "wl1",
+		KVTransferParams: make(map[string]any),
+		ResponseWriter:   recorder,
+	}
+
+	if err := pipeline.New([]pipeline.Step{step}).Execute(t.Context(), reqCtx); err != nil {
+		t.Fatalf("pipeline execute: %v", err)
+	}
+
+	// Attribution hook must have populated reqCtx.
+	if reqCtx.CompletionTokens != 10 {
+		t.Errorf("CompletionTokens = %d, want 10", reqCtx.CompletionTokens)
+	}
+	if reqCtx.PromptTokensFromBody != 20 {
+		t.Errorf("PromptTokensFromBody = %d, want 20", reqCtx.PromptTokensFromBody)
+	}
+
+	// Attributed metrics must be present on the fresh registry.
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, m := range mf {
+		names[m.GetName()] = true
+	}
+	if !names["llm_d_coordinator_request_input_tokens_attributed_total"] {
+		t.Error("expected input attributed metric")
+	}
+	if !names["llm_d_coordinator_request_output_tokens_attributed_total"] {
+		t.Error("expected output attributed metric")
+	}
+}
+
+// TestAttribution_Disabled tests that when the hook is nil, the decode step
+// behaves identically to pre-attribution state.
+func TestAttribution_Disabled(t *testing.T) {
+	coordmetrics.ResetAttribution()
+	t.Cleanup(coordmetrics.ResetAttribution)
+
+	fakeGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "serving-model",
+			"choices": []map[string]any{
+				{"message": map[string]any{"content": "hi"}},
+			},
+		})
+	}))
+	defer fakeGW.Close()
+
+	gwClient := gateway.New(config.GatewayConfig{Address: fakeGW.URL, MaxIdleConnsPerHost: 2})
+	step, err := pipeline.Build(coordsteps.DecodeStepName, gwClient, map[string]any{"use_openai_format": true})
+	if err != nil {
+		t.Fatalf("build decode step: %v", err)
+	}
+	// No hook set — attribution disabled.
+
+	recorder := httptest.NewRecorder()
+	reqCtx := &pipeline.RequestContext{
+		RequestID:        "attribution-disabled",
+		OriginalPath:     reqcommon.PathChatCompletions,
+		Body:             map[string]any{"model": "m", "messages": []any{}},
+		OriginalBody:     []byte(`{"model":"m","messages":[]}`),
+		Model:            "m",
+		KVTransferParams: make(map[string]any),
+		ResponseWriter:   recorder,
+	}
+
+	if err := pipeline.New([]pipeline.Step{step}).Execute(t.Context(), reqCtx); err != nil {
+		t.Fatalf("pipeline execute: %v", err)
+	}
+	// No panic; token counts stay at zero-value (not set by hook).
+	if reqCtx.CompletionTokens != 0 {
+		t.Errorf("CompletionTokens = %d, want 0 (hook was nil)", reqCtx.CompletionTokens)
 	}
 }

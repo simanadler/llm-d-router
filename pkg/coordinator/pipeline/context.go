@@ -69,6 +69,24 @@ type RequestContext struct {
 	Model           string
 	Stream          bool
 
+	// Attribution holds the three identity dimensions extracted from inbound
+	// x-llm-d-*-id headers. Values default to "unknown" when the header is absent.
+	// Set once by handleInference before the pipeline runs; read-only thereafter.
+	TenantID   string
+	UserID     string
+	WorkloadID string
+
+	// CompletionTokens is the completion token count from the decode response body.
+	// Populated by the attribution hook from usage.completion_tokens.
+	// Zero when the decode response body was unavailable or unparseable.
+	CompletionTokens int
+
+	// PromptTokensFromBody is the prompt token count read from the decode response
+	// body's usage.prompt_tokens field. Used when the render step is not in the
+	// pipeline and len(TokenIDs) is zero. Populated by the attribution hook.
+	// Zero when the decode response body was unavailable or unparseable.
+	PromptTokensFromBody int
+
 	// ParseDuration is the time the server spent reading and JSON-parsing the
 	// request body before the pipeline ran. Execute reports it as the first
 	// entry in the step-timing summary.

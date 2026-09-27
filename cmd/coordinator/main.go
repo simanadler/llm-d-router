@@ -44,6 +44,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/coordinator/pipeline"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/pipeline/builder"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/server"
+	"github.com/llm-d/llm-d-router/pkg/coordinator/steps"
 )
 
 // metricsShutdownTimeout bounds the Prometheus /metrics server's shutdown.
@@ -111,16 +112,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Attribution: register the attributed counters and construct the hook before the
+	// pipeline is built, since builder.Build injects the hook into the decode steps.
+	var attributionHook *steps.AttributionHook
+	if cfg.RequestAttribution.Enabled {
+		coordmetrics.RegisterAttribution(ctrlmetrics.Registry, cfg.RequestAttribution.PrometheusUserIDLabel)
+		namespace := os.Getenv("COORDINATOR_NAMESPACE")
+		if namespace == "" {
+			namespace = "default"
+		}
+		attributionHook = steps.NewAttributionHook(true, namespace)
+	}
+
 	gwClient := gateway.New(cfg.Gateway)
 
-	steps, err := builder.Build(cfg, gwClient)
+	pipelineSteps, err := builder.Build(cfg, gwClient, attributionHook)
 	if err != nil {
 		log.Error(err, "failed to build pipeline")
 		os.Exit(1)
 	}
 
-	p := pipeline.New(steps)
-	srv, err := server.New(cfg.Server, p, gwClient)
+	p := pipeline.New(pipelineSteps)
+	srv, err := server.New(cfg, p, gwClient)
 	if err != nil {
 		log.Error(err, "failed to create server")
 		os.Exit(1)

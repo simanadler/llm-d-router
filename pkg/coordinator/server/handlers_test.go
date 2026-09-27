@@ -72,7 +72,7 @@ func newTestServerWithGateway(stepErr error, gatewayURL string) *Server {
 	// A default *http.Transport{} is safe here: the passthrough handler needs a
 	// non-typed-nil RoundTripper so httputil.ReverseProxy dials the test server.
 	gw := gateway.NewWithTransport(&http.Transport{}, gatewayURL)
-	srv, err := New(config.ServerConfig{}, p, gw)
+	srv, err := New(&config.Config{}, p, gw)
 	if err != nil {
 		panic(err) // default config is always valid
 	}
@@ -160,7 +160,7 @@ func TestHandleInference_BodyOverConfiguredCapMapsTo413(t *testing.T) {
 	// A body larger than server.max_request_body_size (in MB) is rejected before parsing.
 	// Use a 1 MB cap and send 1 MB + 1 byte to trigger the limit.
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	srv, err := New(config.ServerConfig{MaxRequestBodySize: 1}, p, gateway.NewWithTransport(nil, stubGatewayURL))
+	srv, err := New(&config.Config{Server: config.ServerConfig{MaxRequestBodySize: 1}}, p, gateway.NewWithTransport(nil, stubGatewayURL))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestHandleInference_BodyOverConfiguredCapMapsTo413(t *testing.T) {
 
 func TestNew_RejectsNegativeMaxRequestBodySize(t *testing.T) {
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{MaxRequestBodySize: -1}, p, gateway.NewWithTransport(nil, stubGatewayURL)); err == nil {
+	if _, err := New(&config.Config{Server: config.ServerConfig{MaxRequestBodySize: -1}}, p, gateway.NewWithTransport(nil, stubGatewayURL)); err == nil {
 		t.Fatal("expected error for negative MaxRequestBodySize")
 	}
 }
@@ -184,28 +184,28 @@ func TestNew_RejectsOverflowMaxRequestBodySize(t *testing.T) {
 	// MaxInt64 would cause maxRequestBodySize+1 to overflow to a negative
 	// io.LimitReader limit, making it return immediate EOF.
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{MaxRequestBodySize: math.MaxInt64}, p, gateway.NewWithTransport(nil, stubGatewayURL)); err == nil {
+	if _, err := New(&config.Config{Server: config.ServerConfig{MaxRequestBodySize: math.MaxInt64}}, p, gateway.NewWithTransport(nil, stubGatewayURL)); err == nil {
 		t.Fatal("expected error for MaxRequestBodySize > MaxInt64-1")
 	}
 }
 
 func TestNew_RejectsNilGatewayClient(t *testing.T) {
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{}, p, nil); err == nil {
+	if _, err := New(&config.Config{}, p, nil); err == nil {
 		t.Fatal("expected error for nil gateway client")
 	}
 }
 
 func TestNew_RejectsGatewayURLWithoutHost(t *testing.T) {
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{}, p, gateway.NewWithTransport(nil, "not-a-url")); err == nil {
+	if _, err := New(&config.Config{}, p, gateway.NewWithTransport(nil, "not-a-url")); err == nil {
 		t.Fatal("expected error for gateway URL without a host")
 	}
 }
 
 func TestNew_RejectsUnparsableGatewayURL(t *testing.T) {
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{}, p, gateway.NewWithTransport(nil, "http://gw:notaport")); err == nil {
+	if _, err := New(&config.Config{}, p, gateway.NewWithTransport(nil, "http://gw:notaport")); err == nil {
 		t.Fatal("expected error for unparsable gateway URL")
 	}
 }
@@ -376,7 +376,7 @@ func TestHandleInference_StreamedUpstreamErrorClassifiedAndNotOverwritten(t *tes
 		return &pipeline.UpstreamStreamedError{Step: "decode", StatusCode: http.StatusInternalServerError}
 	}}
 	p := pipeline.New([]pipeline.Step{step})
-	srv, err := New(config.ServerConfig{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
+	srv, err := New(&config.Config{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
 	require.NoError(t, err)
 
 	rec := postInference(t, srv)
@@ -396,7 +396,7 @@ func TestHandleInference_PipelinePanicRecordsErrorAndPropagates(t *testing.T) {
 		panic("boom")
 	}}
 	p := pipeline.New([]pipeline.Step{panicky})
-	srv, err := New(config.ServerConfig{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
+	srv, err := New(&config.Config{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
 	require.NoError(t, err)
 
 	defer func() {
@@ -558,7 +558,7 @@ func TestHandleInference_OversizeBodyBalancesGauge(t *testing.T) {
 	reg := newMetricsRegistry(t)
 
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	srv, err := New(config.ServerConfig{MaxRequestBodySize: 1}, p, gateway.NewWithTransport(nil, stubGatewayURL))
+	srv, err := New(&config.Config{Server: config.ServerConfig{MaxRequestBodySize: 1}}, p, gateway.NewWithTransport(nil, stubGatewayURL))
 	require.NoError(t, err)
 
 	oversize := strings.Repeat("x", config.BytesPerMB+1)
@@ -596,7 +596,7 @@ func TestHandleInference_ParsedModelSwapsLabel(t *testing.T) {
 		},
 	}
 	p := pipeline.New([]pipeline.Step{observer})
-	srv, err := New(config.ServerConfig{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
+	srv, err := New(&config.Config{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
 	require.NoError(t, err)
 
 	rec := postInference(t, srv)
@@ -740,5 +740,49 @@ func TestRoutesRegistered_MethodMismatchReturns405(t *testing.T) {
 	srv.httpServer.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405 for GET on POST-only %s, got %d", reqcommon.PathChatCompletions, rec.Code)
+	}
+}
+
+// TestInjectStreamOptions_MissingStreamOptions verifies that a body without
+// stream_options gets stream_options.include_usage=true added.
+func TestInjectStreamOptions_MissingStreamOptions(t *testing.T) {
+	body := map[string]any{"model": "m"}
+	injectStreamOptions(body)
+	opts, ok := body["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatal("expected stream_options to be created")
+	}
+	if opts["include_usage"] != true {
+		t.Errorf("include_usage = %v, want true", opts["include_usage"])
+	}
+}
+
+// TestInjectStreamOptions_AlreadySet verifies idempotency: an existing
+// include_usage=true is not overwritten.
+func TestInjectStreamOptions_AlreadySet(t *testing.T) {
+	body := map[string]any{
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	injectStreamOptions(body)
+	opts, _ := body["stream_options"].(map[string]any)
+	if opts["include_usage"] != true {
+		t.Errorf("include_usage = %v, want true after idempotent call", opts["include_usage"])
+	}
+}
+
+// TestInjectStreamOptions_PresentWithoutIncludeUsage verifies that a
+// stream_options map already in the body gets include_usage added without
+// disturbing other keys.
+func TestInjectStreamOptions_PresentWithoutIncludeUsage(t *testing.T) {
+	body := map[string]any{
+		"stream_options": map[string]any{"other_key": "val"},
+	}
+	injectStreamOptions(body)
+	opts, _ := body["stream_options"].(map[string]any)
+	if opts["include_usage"] != true {
+		t.Errorf("include_usage = %v, want true", opts["include_usage"])
+	}
+	if opts["other_key"] != "val" {
+		t.Errorf("other_key was mutated: got %v, want \"val\"", opts["other_key"])
 	}
 }

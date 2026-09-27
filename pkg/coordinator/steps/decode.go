@@ -43,6 +43,17 @@ type DecodeStep struct {
 	useOpenAIFormat bool
 	gwClient        *gateway.Client
 	kv              kv.Connector
+	// Attribution hook: captures completion_tokens from the response body for cost
+	// attribution metrics. Injected by the builder when request_attribution.enabled
+	// is true; nil otherwise. See attribution.go.
+	attribution *AttributionHook
+}
+
+// SetAttributionHook implements AttributionHookSetter. Must be called once
+// during construction (by the builder), before the step handles any request.
+// Calling it after the step begins serving requests is a data race.
+func (s *DecodeStep) SetAttributionHook(h *AttributionHook) {
+	s.attribution = h
 }
 
 func NewDecodeStep(gwClient *gateway.Client, params map[string]any) (pipeline.Step, error) {
@@ -79,13 +90,23 @@ func (s *DecodeStep) Execute(ctx context.Context, reqCtx *pipeline.RequestContex
 	}
 
 	transport := instrumentedTransport(s.gwClient.Transport(), coordmetrics.UpstreamDecode)
-	proxy, out := newDecodeProxy(logger, transport, nil)
+	// Attribution hook: captures completion_tokens from the response body for cost
+	// attribution metrics. Injected by the builder when request_attribution.enabled
+	// is true; nil otherwise. See attribution.go.
+	var modifyResp func(*http.Response) error
+	if s.attribution != nil {
+		modifyResp = s.attribution.ModifyResponseFor(reqCtx, nil)
+	}
+	proxy, out := newDecodeProxy(logger, transport, modifyResp)
 	proxy.ServeHTTP(reqCtx.ResponseWriter, proxyReq)
 	if out.TransportErr != nil {
 		return &pipeline.UpstreamStreamedError{Step: DecodeStepName, Cause: out.TransportErr}
 	}
 	if out.Status >= http.StatusBadRequest {
 		return &pipeline.UpstreamStreamedError{Step: DecodeStepName, StatusCode: out.Status}
+	}
+	if s.attribution != nil {
+		s.attribution.Emit(reqCtx)
 	}
 	return nil
 }

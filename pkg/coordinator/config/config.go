@@ -25,10 +25,28 @@ import (
 )
 
 type Config struct {
-	LogLevel int            `mapstructure:"log_level"`
-	Server   ServerConfig   `mapstructure:"server"`
-	Gateway  GatewayConfig  `mapstructure:"gateway"`
-	Pipeline PipelineConfig `mapstructure:"pipeline"`
+	LogLevel           int                      `mapstructure:"log_level"`
+	Server             ServerConfig             `mapstructure:"server"`
+	Gateway            GatewayConfig            `mapstructure:"gateway"`
+	Pipeline           PipelineConfig           `mapstructure:"pipeline"`
+	RequestAttribution RequestAttributionConfig `mapstructure:"request_attribution"`
+}
+
+// RequestAttributionConfig controls the per-request attribution subsystem that
+// captures tenant/user/workload identity from inbound x-llm-d-*-id headers and
+// emits attributed token-count counters and a structured log record.
+type RequestAttributionConfig struct {
+	// Enabled is the master gate for all attribution logic. When false, no header
+	// extraction, no metric emission, no log record, and no stream_options injection
+	// are performed. Default: false (opt-in).
+	Enabled bool `mapstructure:"enabled"`
+
+	// PrometheusUserIDLabel controls whether user_id is included as a label on the
+	// attributed Prometheus counters. Default: false (safe by default). Set true only
+	// for deployments with a bounded, known requestor population (service accounts,
+	// teams, named integrations). Per-user attribution remains fully available via the
+	// structured log regardless of this setting.
+	PrometheusUserIDLabel bool `mapstructure:"prometheus_user_id_label"`
 }
 
 // BytesPerMB is the number of bytes in one megabyte.
@@ -75,6 +93,8 @@ func Load(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	v.SetDefault("request_attribution.enabled", false)
+	v.SetDefault("request_attribution.prometheus_user_id_label", false)
 	v.SetDefault("log_level", 2)
 	v.SetDefault("server.listen_addr", ":8080")
 	v.SetDefault("server.metrics_port", 9090)

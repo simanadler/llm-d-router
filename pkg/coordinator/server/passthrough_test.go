@@ -354,7 +354,7 @@ func TestPassthrough_BodyOverConfiguredCapMapsTo413(t *testing.T) {
 
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
 	gw := gateway.NewWithTransport(&http.Transport{}, upstream.URL)
-	srv, err := New(config.ServerConfig{MaxRequestBodySize: 1}, p, gw)
+	srv, err := New(&config.Config{Server: config.ServerConfig{MaxRequestBodySize: 1}}, p, gw)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

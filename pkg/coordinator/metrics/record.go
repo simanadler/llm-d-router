@@ -16,7 +16,11 @@ limitations under the License.
 
 package metrics
 
-import "time"
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 // IncRequestTotal increments request_total for the given model.
 func IncRequestTotal(modelName string) {
@@ -98,4 +102,56 @@ func IncExecutionPath(modelName, path string) {
 // one probe outcome ("served", "deferred", "error", or "transport_error").
 func IncConditionalDecodeProbes(result string) {
 	conditionalDecodeProbesTotal.WithLabelValues(result).Inc()
+}
+
+// recordAttributed is the shared implementation for RecordAttributedInputTokens
+// and RecordAttributedOutputTokens. It builds the label slice based on
+// attributionIncludesUserID, which is set once by RegisterAttribution. This
+// avoids runtime probing via GetMetricWithLabelValues, whose error-vs-panic
+// contract for a label-count mismatch varies across prometheus client versions.
+//
+// attributionMu is held only long enough to snapshot the three shared vars;
+// the counter Add call runs outside the lock to avoid serialising all
+// request goroutines on a single mutex.
+func recordAttributed(c *prometheus.CounterVec, modelName, tenantID, workloadID, namespace, userID string, tokens int) {
+	attributionMu.Lock()
+	includeUserID := attributionIncludesUserID
+	attributionMu.Unlock()
+
+	lv := []string{
+		boundModel(modelName),
+		boundTenantID(tenantID),
+		boundWorkloadID(workloadID),
+		namespace,
+	}
+	if includeUserID {
+		lv = append(lv, userID)
+	}
+	c.WithLabelValues(lv...).Add(float64(tokens))
+}
+
+// RecordAttributedInputTokens increments the attributed input token counter.
+// userID is accepted always but is only included in the label map when the
+// counter was registered with the user_id dimension.
+// No-op when attribution has not been registered (disabled deployment).
+func RecordAttributedInputTokens(modelName, tenantID, workloadID, namespace, userID string, tokens int) {
+	attributionMu.Lock()
+	c := attributedInputTokens
+	attributionMu.Unlock()
+	if c == nil {
+		return
+	}
+	recordAttributed(c, modelName, tenantID, workloadID, namespace, userID, tokens)
+}
+
+// RecordAttributedOutputTokens increments the attributed output token counter.
+// See RecordAttributedInputTokens for userID semantics.
+func RecordAttributedOutputTokens(modelName, tenantID, workloadID, namespace, userID string, tokens int) {
+	attributionMu.Lock()
+	c := attributedOutputTokens
+	attributionMu.Unlock()
+	if c == nil {
+		return
+	}
+	recordAttributed(c, modelName, tenantID, workloadID, namespace, userID, tokens)
 }

@@ -139,6 +139,50 @@ Recorded by every step that calls out: render to the renderer service, replace-m
     *   `transport_error`: No response arrived (connection refused, timeout, TCP reset). The step returns an `UpstreamStreamedError` with no status code, and the request is classified as `upstream_transport`.
 *   **Note:** Not redundant with `execution_path_total` since a deferred probe does not indicate whether the subsequent path was `prefill-decode` or `encode-prefill-decode`.
 
+### Attribution metrics
+
+> **Requires `request_attribution.enabled: true`** in the coordinator config. These counters are
+> **not** registered when attribution is disabled.
+
+Label set: `{model_name, tenant_id, workload_id, target_model_name}`. An optional fifth label
+`user_id` is added when `request_attribution.prometheus_user_id_label: true`. The default is
+`false` (safe by default); set `true` only for deployments with a bounded, known requestor
+population. `target_model_name` matches the EPP label of the same name exactly, enabling
+coordinator and EPP metrics to be joined on the served model.
+
+The identity labels (`tenant_id`, `workload_id`, `user_id`) are extracted from inbound
+`x-llm-d-tenant-id`, `x-llm-d-workload-id`, and `x-llm-d-user-id` request headers. Absent headers
+resolve to `"unknown"`. `target_model_name` comes from the `model` field in the decode response
+body; it defaults to the requested `model_name` when the body is unavailable.
+
+| Name | Type | Notes |
+|---|---|---|
+| `request_input_tokens_attributed_total` | Counter | Total prompt tokens received, with attribution labels. Primary source: `len(TokenIDs)` from the render step; fallback: `usage.prompt_tokens` from the decode response body. |
+| `request_output_tokens_attributed_total` | Counter | Total completion tokens generated, from `usage.completion_tokens` in the decode response body. Zero when the body was unavailable or unparseable. |
+
+All four non-optional label dimensions pass through a bounded limiter (cap 1000) before they reach
+`WithLabelValues`, so a deployment with no header-injection policy cannot OOM the coordinator
+through these labels. `user_id` is gated by `prometheus_user_id_label`; operators with unbounded
+user populations must leave it `false` (the default) and use the structured log record for
+per-user queries.
+
+#### Example PromQL — billing window delta
+
+Token counts for a billing window:
+
+```promql
+# Input tokens consumed per tenant and workload in the last hour
+increase(llm_d_coordinator_request_input_tokens_attributed_total{tenant_id!="unknown"}[1h])
+
+# Grouped delta for billing across all tenants
+sum by (tenant_id, workload_id, target_model_name) (
+  increase(llm_d_coordinator_request_input_tokens_attributed_total[1h])
+)
+```
+
+See the proposal [`coordinator-request-attribution-metrics.md`](proposals/coordinator-request-attribution-metrics.md)
+for the full design, security boundary requirements, and OpenCost integration.
+
 ## Relationship to EPP metrics
 
 | Coordinator metric | EPP counterpart | Difference |
@@ -153,7 +197,13 @@ Recorded by every step that calls out: render to the renderer service, replace-m
 
 ### Output and cached token counts
 
-The coordinator emits no output or cached token-count metrics. Those values live in the vLLM `usage` block, and reading them means parsing the streamed SSE response, which the decode step does not do: it proxies bytes straight to the client. Input tokens are recorded (see [`request_input_tokens`](#request-family)): the renderer returns the token IDs, so the count is in hand after render, with no response parsing and no dependency on EPP.
+The coordinator emits no output or cached token-count metrics on the base request family. Those
+values live in the vLLM `usage` block. Input tokens are recorded by `request_input_tokens` after
+the render step.
+
+Output (completion) token counts **are** available when attribution is enabled: the
+`request_output_tokens_attributed_total` counter records them by parsing the decode response body.
+See [Attribution metrics](#attribution-metrics).
 
 ### Time to first token
 

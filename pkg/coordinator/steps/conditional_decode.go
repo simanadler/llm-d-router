@@ -42,6 +42,17 @@ func init() {
 type ConditionalDecodeStep struct {
 	useOpenAIFormat bool
 	gwClient        *gateway.Client
+	// Attribution hook: captures completion_tokens from the response body for cost
+	// attribution metrics. Injected by the builder when request_attribution.enabled
+	// is true; nil otherwise. See attribution.go.
+	attribution *AttributionHook
+}
+
+// SetAttributionHook implements AttributionHookSetter. Must be called once
+// during construction (by the builder), before the step handles any request.
+// Calling it after the step begins serving requests is a data race.
+func (s *ConditionalDecodeStep) SetAttributionHook(h *AttributionHook) {
+	s.attribution = h
 }
 
 func NewConditionalDecodeStep(gwClient *gateway.Client, params map[string]any) (pipeline.Step, error) {
@@ -73,8 +84,10 @@ func (s *ConditionalDecodeStep) Execute(ctx context.Context, reqCtx *pipeline.Re
 	}
 
 	var cacheMiss bool
-	transport := instrumentedTransport(s.gwClient.Transport(), coordmetrics.UpstreamConditionalDecode)
-	proxy, out := newDecodeProxy(logger, transport, func(resp *http.Response) error {
+	// probe is the existing cache-miss detection closure. Attribution must compose
+	// with it, never replace it: replacing it removes cache-miss detection entirely,
+	// so the 412 would be streamed to the client as the final response.
+	probe := func(resp *http.Response) error {
 		switch {
 		case resp.StatusCode == http.StatusPreconditionFailed:
 			cacheMiss = true
@@ -88,12 +101,24 @@ func (s *ConditionalDecodeStep) Execute(ctx context.Context, reqCtx *pipeline.Re
 			coordmetrics.IncConditionalDecodeProbes(coordmetrics.ProbeResultServed)
 		}
 		return nil
-	})
+	}
+	// Attribution hook: captures completion_tokens from the response body for cost
+	// attribution metrics. Injected by the builder when request_attribution.enabled
+	// is true; nil otherwise. See attribution.go.
+	// Compose with the probe: ModifyResponseFor installs the tee first, then
+	// calls probe. The ordering is load-bearing — tee before delegation so the
+	// probe's errCacheMiss does not skip setup. probe's error is returned verbatim.
+	transport := instrumentedTransport(s.gwClient.Transport(), coordmetrics.UpstreamConditionalDecode)
+	modifyResp := func(resp *http.Response) error { return probe(resp) }
+	if s.attribution != nil {
+		modifyResp = s.attribution.ModifyResponseFor(reqCtx, probe)
+	}
+	proxy, out := newDecodeProxy(logger, transport, modifyResp)
 	proxy.ServeHTTP(reqCtx.ResponseWriter, proxyReq)
 
 	if cacheMiss {
 		logger.V(logutil.DEFAULT).Info("cache miss (412), continuing pipeline")
-		return nil
+		return nil // pipeline continues to decode; that step's hook emits attribution
 	}
 	if out.TransportErr != nil {
 		coordmetrics.IncConditionalDecodeProbes(coordmetrics.ProbeResultTransportError)
@@ -101,6 +126,9 @@ func (s *ConditionalDecodeStep) Execute(ctx context.Context, reqCtx *pipeline.Re
 	}
 	if out.Status >= http.StatusBadRequest {
 		return &pipeline.UpstreamStreamedError{Step: ConditionalDecodeStepName, StatusCode: out.Status}
+	}
+	if s.attribution != nil {
+		s.attribution.Emit(reqCtx)
 	}
 
 	logger.V(logutil.DEFAULT).Info("cache hit, response forwarded")

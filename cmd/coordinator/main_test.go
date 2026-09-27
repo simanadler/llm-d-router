@@ -42,11 +42,13 @@ import (
 
 func newTestServer(t *testing.T, listenAddr string) *server.Server {
 	t.Helper()
-	srv, err := server.New(config.ServerConfig{
-		ListenAddr:      listenAddr,
-		ShutdownTimeout: time.Second,
-		ReadTimeout:     time.Second,
-		WriteTimeout:    time.Second,
+	srv, err := server.New(&config.Config{
+		Server: config.ServerConfig{
+			ListenAddr:      listenAddr,
+			ShutdownTimeout: time.Second,
+			ReadTimeout:     time.Second,
+			WriteTimeout:    time.Second,
+		},
 	}, pipeline.New(nil), gateway.NewWithTransport(nil, "http://gateway-stub.invalid"))
 	require.NoError(t, err)
 	return srv

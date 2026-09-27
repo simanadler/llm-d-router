@@ -156,3 +156,61 @@ func Reset() {
 		c.Reset()
 	}
 }
+
+// RegisterAttribution constructs the attributed token-count counters with the
+// correct label set (with or without user_id based on includeUserID) and registers
+// them on reg. It must be called once at startup, before the server accepts requests.
+//
+// Not added to allCollectors because the label set is determined at runtime by
+// the PrometheusUserIDLabel config flag, which is not known at package init time.
+//
+// Safe to call more than once (e.g. in tests): subsequent calls are no-ops.
+// To re-register with a different label set in tests, call ResetAttribution first.
+func RegisterAttribution(reg prometheus.Registerer, includeUserID bool) {
+	attributionMu.Lock()
+	defer attributionMu.Unlock()
+
+	if attributedInputTokens != nil {
+		return // already registered
+	}
+	labels := []string{"model_name", "tenant_id", "workload_id", "namespace"}
+	if includeUserID {
+		labels = append(labels, "user_id")
+	}
+	attributedInputTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterCoordinatorSubsystem,
+			Name:      "request_input_tokens_attributed_total",
+			Help:      "[ALPHA] Total prompt tokens received, labelled with attribution dimensions (tenant_id, workload_id, optionally user_id). Only registered when request_attribution.enabled is true.",
+		},
+		labels,
+	)
+	attributedOutputTokens = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterCoordinatorSubsystem,
+			Name:      "request_output_tokens_attributed_total",
+			Help:      "[ALPHA] Total completion tokens generated, labelled with attribution dimensions (tenant_id, workload_id, optionally user_id). Only registered when request_attribution.enabled is true.",
+		},
+		labels,
+	)
+	// Record whether user_id is part of the label set so recordAttributed can
+	// build the correct slice directly, without runtime probing via
+	// GetMetricWithLabelValues (whose error-vs-panic contract varies across
+	// prometheus client versions).
+	attributionIncludesUserID = includeUserID
+	reg.MustRegister(attributedInputTokens, attributedOutputTokens)
+}
+
+// ResetAttribution drops the attributed counters so a subsequent
+// RegisterAttribution rebuilds them with a fresh label set. For tests only:
+// production registers once at startup. Note that tests touching attribution
+// metrics cannot run in parallel with each other because the package-level
+// vars are shared.
+func ResetAttribution() {
+	attributionMu.Lock()
+	defer attributionMu.Unlock()
+
+	attributedInputTokens = nil
+	attributedOutputTokens = nil
+	attributionIncludesUserID = false
+}

@@ -40,3 +40,41 @@ func boundModel(modelName string) string {
 	}
 	return modelLabelLimiter.Bound(modelName)
 }
+
+// Attribution label limiters. tenant_id and workload_id are derived from request
+// headers — neither is validated against a closed set. The same cap as model_name
+// is used.
+//
+// Important: these caps bound the number of distinct values admitted *per label
+// dimension*, not the total number of Prometheus time series. Series count is
+// the cross-product of co-occurring label values, so with three independently
+// capped dimensions (model_name, tenant_id, workload_id) the worst-case series
+// count on the attributed counters is on the order of 1 000³. All three dimensions
+// are client-influenced (two headers + request body), so a single client can drive
+// the product without any individual cap being exceeded. These limiters guard
+// against unbounded per-dimension value growth; operators of deployments that do
+// not enforce attribution headers from a trusted upstream must weigh that
+// cross-dimensional risk independently.
+const maxAttributionLabelValues = 1000
+
+var (
+	tenantIDLabelLimiter   = metricsutil.NewBoundedLabel(maxAttributionLabelValues)
+	workloadIDLabelLimiter = metricsutil.NewBoundedLabel(maxAttributionLabelValues)
+)
+
+// boundTenantID maps a tenant_id to its capped label value. Empty resolves to
+// ModelUnknown before the cap is consulted, matching the behaviour of boundModel.
+func boundTenantID(v string) string {
+	if v == "" {
+		return ModelUnknown
+	}
+	return tenantIDLabelLimiter.Bound(v)
+}
+
+// boundWorkloadID maps a workload_id to its capped label value.
+func boundWorkloadID(v string) string {
+	if v == "" {
+		return ModelUnknown
+	}
+	return workloadIDLabelLimiter.Bound(v)
+}

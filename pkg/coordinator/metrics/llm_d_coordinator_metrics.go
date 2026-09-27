@@ -17,6 +17,8 @@ limitations under the License.
 package metrics
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	compbasemetrics "k8s.io/component-base/metrics"
 
@@ -142,6 +144,25 @@ var (
 		},
 		upstreamLabel,
 	)
+)
+
+// Attribution metric families. Declared here alongside the other coordinator
+// metric vars, but initialised by RegisterAttribution at startup (not at
+// package init), because the label set depends on the PrometheusUserIDLabel
+// config flag which is only known at runtime.
+//
+// attributionMu guards attributedInputTokens, attributedOutputTokens, and
+// attributionIncludesUserID. All three are written together by RegisterAttribution
+// and ResetAttribution, and read together by recordAttributed. A plain mutex is
+// sufficient: RegisterAttribution and ResetAttribution are called at most once
+// each per test and once at process startup in production, and recordAttributed
+// holds the lock only for the duration of a slice construction and a single
+// WithLabelValues call.
+var (
+	attributionMu             sync.Mutex
+	attributedInputTokens     *prometheus.CounterVec
+	attributedOutputTokens    *prometheus.CounterVec
+	attributionIncludesUserID bool // set once by RegisterAttribution; read by recordAttributed
 )
 
 // Execution path and conditional-decode probe outcome. execution_path_total

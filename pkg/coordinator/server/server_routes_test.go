@@ -46,7 +46,7 @@ func (s *auxRouteStep) RegisterRoutes(r chi.Router) {
 func TestServerRegistersStepRoutes(t *testing.T) {
 	step := &auxRouteStep{stubStep: stubStep{name: "aux"}}
 	p := pipeline.New([]pipeline.Step{stubStep{name: "plain"}, step})
-	srv, err := New(config.ServerConfig{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
+	srv, err := New(&config.Config{}, p, gateway.NewWithTransport(nil, stubGatewayURL))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

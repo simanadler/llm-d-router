@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,107 @@ func TestUpstreamFamily_Records(t *testing.T) {
 
 	require.InDelta(t, 2.0, promtestutil.ToFloat64(upstreamRequestTotal.WithLabelValues(UpstreamEncode)), 1e-9)
 	require.InDelta(t, 1.0, promtestutil.ToFloat64(upstreamRequestTotal.WithLabelValues(UpstreamReplaceMediaURLs)), 1e-9)
+}
+
+// Attribution metric tests. These tests cannot run in parallel with each other
+// because attributedInputTokens and attributedOutputTokens are package-level vars.
+
+func TestRegisterAttribution_WithUserID(t *testing.T) {
+	ResetAttribution()
+	reg := prometheus.NewRegistry()
+	RegisterAttribution(reg, true)
+
+	// Add tokens with user_id — must not panic, and causes metric to appear in Gather.
+	RecordAttributedInputTokens("m", "t", "w", "ns", "u", 512)
+	RecordAttributedOutputTokens("m", "t", "w", "ns", "u", 128)
+
+	// Both counters registered; label set includes user_id.
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, m := range mf {
+		names[m.GetName()] = true
+	}
+	if !names["llm_d_coordinator_request_input_tokens_attributed_total"] {
+		t.Error("expected request_input_tokens_attributed_total to be registered")
+	}
+	if !names["llm_d_coordinator_request_output_tokens_attributed_total"] {
+		t.Error("expected request_output_tokens_attributed_total to be registered")
+	}
+	ResetAttribution()
+}
+
+func TestRegisterAttribution_WithoutUserID(t *testing.T) {
+	ResetAttribution()
+	reg := prometheus.NewRegistry()
+	RegisterAttribution(reg, false)
+
+	// Observe without user_id dimension — must not panic.
+	RecordAttributedInputTokens("m", "t", "w", "ns", "u", 100)
+	RecordAttributedOutputTokens("m", "t", "w", "ns", "u", 50)
+	ResetAttribution()
+}
+
+func TestRegisterAttribution_Idempotent(t *testing.T) {
+	ResetAttribution()
+	reg := prometheus.NewRegistry()
+	RegisterAttribution(reg, true)
+	// A second call must be a no-op (no panic, no duplicate registration error).
+	RegisterAttribution(reg, true)
+	ResetAttribution()
+}
+
+func TestRegisterAttribution_NilAfterReset(t *testing.T) {
+	ResetAttribution()
+	// After reset, nil-check gate must allow re-registration with a different label set.
+	reg := prometheus.NewRegistry()
+	RegisterAttribution(reg, true)
+	ResetAttribution()
+
+	reg2 := prometheus.NewRegistry()
+	RegisterAttribution(reg2, false)
+	// If we registered with includeUserID=false, a 4-label observe must fail gracefully.
+	RecordAttributedInputTokens("m", "t", "w", "ns", "u", 10)
+	ResetAttribution()
+}
+
+func TestRecordAttributed_NilCounter(t *testing.T) {
+	ResetAttribution()
+	// Must not panic when attribution is not registered.
+	RecordAttributedInputTokens("m", "t", "w", "ns", "u", 1)
+	RecordAttributedOutputTokens("m", "t", "w", "ns", "u", 1)
+}
+
+func TestAttributionLabelBounding(t *testing.T) {
+	ResetAttribution()
+	reg := prometheus.NewRegistry()
+	RegisterAttribution(reg, false)
+
+	// Fill the tenant_id limiter past its cap (maxAttributionLabelValues = 1000)
+	// to verify that observations beyond the cap do not panic and that
+	// Gather still succeeds (the overflow values are remapped to the limiter's
+	// overflow sentinel, so the series count stays bounded).
+	for i := range maxAttributionLabelValues + 1 {
+		tenantID := fmt.Sprintf("tenant-%04d", i)
+		RecordAttributedInputTokens("model", tenantID, "wl", "ns", "u", 1)
+	}
+
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather after bounded labels: %v", err)
+	}
+	var inputFound bool
+	for _, m := range mf {
+		if m.GetName() == "llm_d_coordinator_request_input_tokens_attributed_total" {
+			inputFound = true
+		}
+	}
+	if !inputFound {
+		t.Error("expected input attributed metric to be present after observations")
+	}
+	ResetAttribution()
 }
 
 func TestExecutionPathAndProbes_Records(t *testing.T) {

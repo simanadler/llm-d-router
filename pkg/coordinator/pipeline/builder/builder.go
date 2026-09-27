@@ -35,21 +35,43 @@ import (
 // must precede routing), so it is only valid in first position. The tokens-in
 // format (use_openai_format=false) sends token IDs that only the render step
 // produces, so it requires a render step in the pipeline.
-func validatePipeline(p config.PipelineConfig) error {
+// When attributionEnabled is true, the pipeline must contain at least one decode
+// step (decode or conditional-decode); attribution is captured from the decode
+// response body and cannot function without one.
+func validatePipeline(p config.PipelineConfig, attributionEnabled bool) error {
 	for i, s := range p.Steps {
 		if s.Type == asyncbroker.StepName && i > 0 {
 			return fmt.Errorf("the %q step must be the first pipeline step, found it at position %d", asyncbroker.StepName, i+1)
 		}
 	}
-	if p.UseOpenAIFormat {
-		return nil
-	}
-	for _, s := range p.Steps {
-		if s.Type == steps.RenderStepName {
-			return nil
+	if !p.UseOpenAIFormat {
+		hasRender := false
+		for _, s := range p.Steps {
+			if s.Type == steps.RenderStepName {
+				hasRender = true
+				break
+			}
+		}
+		if !hasRender {
+			return fmt.Errorf("pipeline.use_openai_format=false requires a %q step (the tokens-in format sends token IDs that render produces)", steps.RenderStepName)
 		}
 	}
-	return fmt.Errorf("pipeline.use_openai_format=false requires a %q step (the tokens-in format sends token IDs that render produces)", steps.RenderStepName)
+	if attributionEnabled {
+		// Attribution is captured from the decode response body, so a pipeline with
+		// neither decode step can never emit an attribution record. Enabling
+		// attribution against such a pipeline is a config error, not a silent no-op.
+		hasDecodeStep := false
+		for _, s := range p.Steps {
+			if s.Type == steps.DecodeStepName || s.Type == steps.ConditionalDecodeStepName {
+				hasDecodeStep = true
+				break
+			}
+		}
+		if !hasDecodeStep {
+			return fmt.Errorf("request_attribution.enabled=true requires a %q or %q step in the pipeline (attribution is captured from the decode response body)", steps.DecodeStepName, steps.ConditionalDecodeStepName)
+		}
+	}
+	return nil
 }
 
 func mergeConnectorDefaults(params map[string]any, kvConnector, ecConnector string) map[string]any {
@@ -67,8 +89,17 @@ func mergeConnectorDefaults(params map[string]any, kvConnector, ecConnector stri
 }
 
 // Build validates cfg.Pipeline and constructs its steps in order.
-func Build(cfg *config.Config, gwClient *gateway.Client) ([]pipeline.Step, error) {
-	if err := validatePipeline(cfg.Pipeline); err != nil {
+// hook is the attribution hook constructed by main.go; it is nil when
+// request_attribution.enabled is false and Build then behaves exactly as
+// it does without attribution.
+//
+// Attribution hooks are injected here, after step construction, rather than
+// requiring operators to configure them in their pipeline YAML. The hook must
+// be on the decode step(s) specifically — it is not a generic pipeline concern.
+// When attribution is disabled, hooks are nil and both steps behave identically
+// to their pre-attribution state. See RequestAttributionConfig.
+func Build(cfg *config.Config, gwClient *gateway.Client, hook *steps.AttributionHook) ([]pipeline.Step, error) {
+	if err := validatePipeline(cfg.Pipeline, cfg.RequestAttribution.Enabled); err != nil {
 		return nil, err
 	}
 
@@ -85,5 +116,18 @@ func Build(cfg *config.Config, gwClient *gateway.Client) ([]pipeline.Step, error
 
 		pipelineSteps = append(pipelineSteps, step)
 	}
+
+	// Inject the attribution hook into decode steps after construction.
+	// The StepFactory interface accepts only (gwClient, params), so the hook
+	// cannot be passed via the factory. Instead we use the AttributionHookSetter
+	// interface, which both DecodeStep and ConditionalDecodeStep implement.
+	if hook != nil {
+		for _, step := range pipelineSteps {
+			if setter, ok := step.(steps.AttributionHookSetter); ok {
+				setter.SetAttributionHook(hook)
+			}
+		}
+	}
+
 	return pipelineSteps, nil
 }
